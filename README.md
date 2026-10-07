@@ -90,7 +90,7 @@ FLUSH PRIVILEGES;
 
 Початкові дані для бази даних знаходяться у файлі `data.sql` в репозиторії backend:
 
-[teachua-backend — GitHub](https://github.com/DevOps-ProjectLevel/teachua-backend)
+[teachua-backend — GitHub](https://github.com/denchik911/teachua-Full/tree/manual/teachua-backend)
 
 Файл необхідно завантажити на `vm-db` та імпортувати до бази даних MariaDB.
 
@@ -527,11 +527,11 @@ curl http://IP_BACKEND:8080
 
 ### Frontend
 
-[teachua-frontend — GitHub](https://github.com/DevOps-ProjectLevel/teachua-frontend)
+[teachua-frontend — GitHub](https://github.com/denchik911/teachua-Full/tree/manual/teachua-frontend)
 
 ### Backend
 
-[teachua-backend — GitHub](https://github.com/DevOps-ProjectLevel/teachua-backend)
+[teachua-backend — GitHub](https://github.com/denchik911/teachua-Full/tree/manual/teachua-backend)
 
 ---
 
