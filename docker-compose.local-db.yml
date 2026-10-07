@@ -1,0 +1,62 @@
+# БД у КОНТЕЙНЕРІ на тому ж сервері. Запуск:
+#   docker compose -f docker-compose.local-db.yml up -d --build
+name: teachua
+
+services:
+  db:
+    image: mariadb:10.11
+    command: ["--character-set-server=utf8", "--collation-server=utf8_bin"]
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Вкажіть DB_ROOT_PASSWORD у .env}
+      MARIADB_DATABASE: ${DB_NAME:-teachua}
+      MARIADB_USER: ${DB_USER:?Вкажіть DB_USER у .env}
+      MARIADB_PASSWORD: ${DB_PASSWORD:?Вкажіть DB_PASSWORD у .env}
+    volumes:
+      - dbdata:/var/lib/mysql
+      # Виконується лише при ПЕРШОМУ старті з порожнім томом
+      - ./teachua-backend/data.sql:/docker-entrypoint-initdb.d/01-data.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    # Порт назовні НЕ відкриваємо: БД бачить лише backend у внутрішній мережі
+
+  backend:
+    build:
+      context: ./teachua-backend
+    image: teachua-backend:${IMAGE_TAG:-local}
+    environment:
+      JDBC_DRIVER: ${JDBC_DRIVER:-org.mariadb.jdbc.Driver}
+      # Хост "db" = імʼя сервісу вище (Docker сам розвʼязує його в IP)
+      DATASOURCE_URL: jdbc:mariadb://db:3306/${DB_NAME:-teachua}
+      DATASOURCE_USER: ${DB_USER:?Вкажіть DB_USER у .env}
+      DATASOURCE_PASSWORD: ${DB_PASSWORD:?Вкажіть DB_PASSWORD у .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./teachua-frontend
+    image: teachua-frontend:${IMAGE_TAG:-local}
+    environment:
+      REACT_APP_ROOT_SERVER: http://${APP_HOST:?Вкажіть APP_HOST у .env}:${BACKEND_PORT:-8080}
+    stdin_open: true
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    restart: unless-stopped
+
+volumes:
+  dbdata:

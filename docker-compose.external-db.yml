@@ -1,0 +1,35 @@
+# БД на ІНШОМУ сервері (окрема ВМ). Запуск:
+#   docker compose -f docker-compose.external-db.yml up -d --build
+name: teachua
+
+services:
+  backend:
+    build:
+      context: ../teachua-backend
+    image: teachua-backend:${IMAGE_TAG:-local}
+    environment:
+      JDBC_DRIVER: ${JDBC_DRIVER:-org.mariadb.jdbc.Driver}
+      DATASOURCE_URL: jdbc:mariadb://${DB_HOST:?Вкажіть DB_HOST у .env}:${DB_PORT:-3306}/${DB_NAME:-teachua}
+      DATASOURCE_USER: ${DB_USER:?Вкажіть DB_USER у .env}
+      DATASOURCE_PASSWORD: ${DB_PASSWORD:?Вкажіть DB_PASSWORD у .env}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    healthcheck:
+      # У JRE-образі немає curl, тому перевіряємо, що порт 8080 приймає зʼєднання
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./teachua-frontend
+    image: teachua-frontend:${IMAGE_TAG:-local}
+    environment:
+      REACT_APP_ROOT_SERVER: http://${APP_HOST:?Вкажіть APP_HOST у .env}:${BACKEND_PORT:-8080}
+    stdin_open: true
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    restart: unless-stopped
