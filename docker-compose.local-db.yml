@@ -2,6 +2,26 @@
 #   docker compose -f docker-compose.local-db.yml up -d --build
 name: teachua
 
+x-backend: &backend
+  build:
+    context: ./teachua-backend
+  image: teachua-backend:${IMAGE_TAG:-local}
+  environment:
+    JDBC_DRIVER: ${JDBC_DRIVER:-org.mariadb.jdbc.Driver}
+    DATASOURCE_URL: jdbc:mariadb://db:3306/${DB_NAME:-teachua}
+    DATASOURCE_USER: ${DB_USER:?Вкажіть DB_USER у .env}
+    DATASOURCE_PASSWORD: ${DB_PASSWORD:?Вкажіть DB_PASSWORD у .env}
+  depends_on:
+    db:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 60s
+  restart: unless-stopped
+
 services:
   db:
     image: mariadb:10.11
@@ -24,27 +44,28 @@ services:
     restart: unless-stopped
     # Порт назовні НЕ відкриваємо: БД бачить лише backend у внутрішній мережі
 
-  backend:
-    build:
-      context: ./teachua-backend
-    image: teachua-backend:${IMAGE_TAG:-local}
-    environment:
-      JDBC_DRIVER: ${JDBC_DRIVER:-org.mariadb.jdbc.Driver}
-      # Хост "db" = імʼя сервісу вище (Docker сам розвʼязує його в IP)
-      DATASOURCE_URL: jdbc:mariadb://db:3306/${DB_NAME:-teachua}
-      DATASOURCE_USER: ${DB_USER:?Вкажіть DB_USER у .env}
-      DATASOURCE_PASSWORD: ${DB_PASSWORD:?Вкажіть DB_PASSWORD у .env}
-    depends_on:
-      db:
-        condition: service_healthy
+  backend1:
+    <<: *backend
+
+  backend2:
+    <<: *backend
+
+  nginx:
+    image: nginx:1.27-alpine
     ports:
-      - "${BACKEND_PORT:-8080}:8080"
+      - "${BACKEND_PORT:-8080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      backend1:
+        condition: service_healthy
+      backend2:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1/nginx-health"]
       interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
+      timeout: 3s
+      retries: 3
     restart: unless-stopped
 
   frontend:

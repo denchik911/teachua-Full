@@ -2,25 +2,47 @@
 #   docker compose -f docker-compose.external-db.yml up -d --build
 name: teachua
 
+x-backend: &backend
+  build:
+    context: ./teachua-backend
+  image: teachua-backend:${IMAGE_TAG:-local}
+  environment:
+    JDBC_DRIVER: ${JDBC_DRIVER:-org.mariadb.jdbc.Driver}
+    DATASOURCE_URL: jdbc:mariadb://${DB_HOST:?Вкажіть DB_HOST у .env}:${DB_PORT:-3306}/${DB_NAME:-teachua}
+    DATASOURCE_USER: ${DB_USER:?Вкажіть DB_USER у .env}
+    DATASOURCE_PASSWORD: ${DB_PASSWORD:?Вкажіть DB_PASSWORD у .env}
+  healthcheck:
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 60s
+  restart: unless-stopped
+
 services:
-  backend:
-    build:
-      context: ../teachua-backend
-    image: teachua-backend:${IMAGE_TAG:-local}
-    environment:
-      JDBC_DRIVER: ${JDBC_DRIVER:-org.mariadb.jdbc.Driver}
-      DATASOURCE_URL: jdbc:mariadb://${DB_HOST:?Вкажіть DB_HOST у .env}:${DB_PORT:-3306}/${DB_NAME:-teachua}
-      DATASOURCE_USER: ${DB_USER:?Вкажіть DB_USER у .env}
-      DATASOURCE_PASSWORD: ${DB_PASSWORD:?Вкажіть DB_PASSWORD у .env}
+
+  backend1:
+    <<: *backend
+
+  backend2:
+    <<: *backend
+
+  nginx:
+    image: nginx:1.27-alpine
     ports:
-      - "${BACKEND_PORT:-8080}:8080"
+      - "${BACKEND_PORT:-8080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      backend1:
+        condition: service_healthy
+      backend2:
+        condition: service_healthy
     healthcheck:
-      # У JRE-образі немає curl, тому перевіряємо, що порт 8080 приймає зʼєднання
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1/nginx-health"]
       interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
+      timeout: 3s
+      retries: 3
     restart: unless-stopped
 
   frontend:
