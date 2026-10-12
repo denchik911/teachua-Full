@@ -1,0 +1,118 @@
+---
+- name: Встановити Java 17 та Maven
+  ansible.builtin.apt:
+    name:
+      - "{{ java_package }}"
+      - maven
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Створити системного користувача для застосунку
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    system: true
+    home: "{{ app_home }}"
+    create_home: true
+    shell: /usr/sbin/nologin
+
+- name: Каталог для готового WAR
+  ansible.builtin.file:
+    path: "{{ app_home }}/backend"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0755"
+
+- name: Клонувати репозиторій
+  ansible.builtin.git:
+    repo: "{{ repo_url }}"
+    dest: "{{ app_home }}/src"
+    version: "{{ repo_version }}"
+    update: "{{ repo_update | bool }}"
+    force: "{{ repo_update | bool }}"
+  # become_user: "{{ app_user }}"
+  register: git_result
+
+- name: Змінити власника вихідного коду на користувача застосунку
+  ansible.builtin.file:
+    path: "{{ app_home }}/src"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    recurse: yes
+  become: true
+
+- name: Видалити стару збірку, якщо код змінився
+  ansible.builtin.file:
+    path: "{{ app_home }}/src/{{ backend_subdir }}/target"
+    state: absent
+  when: git_result.changed
+
+- name: Зібрати WAR (Maven)
+  ansible.builtin.command:
+    cmd: mvn -B -q clean package -DskipTests
+    chdir: "{{ app_home }}/src/{{ backend_subdir }}"
+    creates: "{{ app_home }}/src/{{ backend_subdir }}/target/{{ backend_war }}"
+  # become_user: "{{ app_user }}"
+
+- name: Скопіювати WAR у робочий каталог
+  ansible.builtin.copy:
+    src: "{{ app_home }}/src/{{ backend_subdir }}/target/{{ backend_war }}"
+    dest: "{{ app_home }}/backend/app.war"
+    remote_src: true
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0644"
+  notify: Restart teachua-backend
+
+- name: Каталог для конфігурації
+  ansible.builtin.file:
+    path: /etc/teachua
+    state: directory
+    mode: "0755"
+
+- name: Файл зі змінними середовища backend (з паролем БД)
+  ansible.builtin.template:
+    src: backend.env.j2
+    dest: /etc/teachua/backend.env
+    owner: root
+    group: "{{ app_user }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart teachua-backend
+
+- name: systemd-юніт backend
+  ansible.builtin.template:
+    src: teachua-backend.service.j2
+    dest: /etc/systemd/system/teachua-backend.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart teachua-backend
+
+- name: Застосувати накопичені handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Увімкнути та запустити backend
+  ansible.builtin.service:
+    name: teachua-backend
+    state: started
+    enabled: true
+
+- name: Firewall — відкрити порт backend
+  community.general.ufw:
+    rule: allow
+    port: "{{ backend_port }}"
+    proto: tcp
+    comment: "TeachUA backend"
+
+- name: Перевірка роботи (backend відповідає і бачить БД)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ backend_port }}/dev/api/cities"
+    status_code: 200
+  register: smoke
+  retries: 18
+  delay: 10
+  until: smoke.status == 200

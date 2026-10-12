@@ -1,0 +1,42 @@
+---
+# ====== Код застосунку ======
+repo_owner: denchik911
+repo_name: teachua-Full
+repo_url: "https://github.com/{{ repo_owner }}/{{ repo_name }}.git"
+repo_version: main            # гілка або тег, де лежить код застосунку
+backend_subdir: teachua-backend
+frontend_subdir: teachua-frontend
+backend_war: dev.war          # імʼя WAR-файлу, який створює Maven у target/
+
+#   Щоб підтягнути нові коміти:
+#   ansible-playbook site.yml -e repo_update=true
+repo_update: false
+
+# ====== Адреси машин (беруться з inventory.ini) ======
+db_host: "{{ hostvars['db']['ansible_host'] }}"
+backend_host: "{{ hostvars['backend']['ansible_host'] }}"
+frontend_host: "{{ hostvars['frontend']['ansible_host'] }}"
+
+# ====== База даних ======
+db_name: teachua
+db_user: teachua
+db_port: 3306
+db_socket: /run/mysqld/mysqld.sock
+db_password: "{{ vault_db_password }}"     # справжнє значення — у vault.yml (зашифрований)
+
+# ====== Backend ======
+app_user: teachua
+app_home: /opt/teachua
+java_package: openjdk-17-jdk   # перевір: apt-cache policy openjdk-17-jdk
+jdbc_driver: org.mariadb.jdbc.Driver
+backend_port: 8080
+backend_java_opts: "-Xms256m -Xmx768m"
+
+# ====== Frontend ======
+frontend_port: 80
+node_version: 16.0.0
+node_home: "/opt/node-v{{ node_version }}-linux-x64"
+npm_ci_flags: ""                # якщо npm ci падає на конфлікті залежностей: "--legacy-peer-deps"
+# Адреса backend ВШИВАЄТЬСЯ у збірку React; браузер звертається до неї напряму
+frontend_api_url: "http://{{ backend_host }}:{{ backend_port }}"
+web_root: /var/www/teachua

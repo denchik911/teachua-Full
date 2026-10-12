@@ -1,0 +1,6 @@
+---
+# Додаткові модулі, яких немає в мінімальному ansible-core.
+# Встановлення:  ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: community.general   # ufw (firewall)
+  - name: community.mysql     # створення БД і користувачів MariaDB

@@ -1,0 +1,19 @@
+[db]
+db        ansible_host=
+
+[backend]
+backend   ansible_host=
+
+[frontend]
+frontend  ansible_host=
+
+[teachua:children]
+db
+backend
+frontend
+
+[all:vars]
+ansible_user=
+ansible_ssh_private_key_file=/path/to/key
+ansible_python_interpreter=/usr/bin/python3
+ansible_become_method=sudo

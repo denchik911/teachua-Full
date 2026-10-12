@@ -1,0 +1,20 @@
+[Unit]
+Description=TeachUA backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_home }}/backend
+EnvironmentFile=/etc/teachua/backend.env
+Environment="JAVA_OPTS={{ backend_java_opts }}"
+ExecStart=/usr/bin/java $JAVA_OPTS -jar {{ app_home }}/backend/app.war
+SuccessExitCodes=143
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

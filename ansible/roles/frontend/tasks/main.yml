@@ -1,0 +1,135 @@
+---
+- name: Встановити nginx
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Створити системного користувача для збірки
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    system: true
+    home: "{{ app_home }}"
+    create_home: true
+    shell: /usr/sbin/nologin
+
+
+# ---------- Node.js 16 ----------
+- name: Перевірити наявність встановленої Node.js
+  ansible.builtin.stat:
+    path: "{{ node_home }}/bin/node"
+  register: node_binary
+
+- name: Завантажити Node.js {{ node_version }}
+  ansible.builtin.get_url:
+    url: "https://nodejs.org/dist/v{{ node_version }}/node-v{{ node_version }}-linux-x64.tar.xz"
+    dest: "/tmp/node-v{{ node_version }}.tar.xz"
+    mode: "0644"
+  when: not node_binary.stat.exists
+
+- name: Розпакувати Node.js в /opt
+  ansible.builtin.unarchive:
+    src: "/tmp/node-v{{ node_version }}.tar.xz"
+    dest: /opt
+    remote_src: true
+    creates: "{{ node_home }}/bin/node"
+
+- name: Клонувати репозиторій
+  ansible.builtin.git:
+    repo: "{{ repo_url }}"
+    dest: "{{ app_home }}/src"
+    version: "{{ repo_version }}"
+    update: "{{ repo_update | bool }}"
+    force: "{{ repo_update | bool }}"
+  become_user: "{{ app_user }}"
+  register: git_result
+
+- name: Оголосити ROOT_SERVER зі змінної середовища
+  ansible.builtin.replace:
+    path: "{{ app_home }}/src/{{ frontend_subdir }}/src/config/ApplicationConfig.js"
+    regexp: '^//export const ROOT_SERVER.*$'
+    replace: 'export const ROOT_SERVER = process.env.REACT_APP_ROOT_SERVER;'
+  become_user: "{{ app_user }}"
+  register: patch_result
+
+- name: Запамʼятати, для якої адреси API зроблена збірка
+  ansible.builtin.copy:
+    content: "{{ frontend_api_url }}\n"
+    dest: "{{ app_home }}/src/{{ frontend_subdir }}/.build-api-url"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0644"
+  register: api_url_marker
+
+- name: Видалити стару збірку, якщо змінився код або адреса API
+  ansible.builtin.file:
+    path: "{{ app_home }}/src/{{ frontend_subdir }}/build"
+    state: absent
+  when: git_result.changed or patch_result.changed or api_url_marker.changed
+
+- name: Встановити залежності (npm ci)
+  ansible.builtin.command:
+    cmd: "{{ node_home }}/bin/npm ci {{ npm_ci_flags }}"
+    chdir: "{{ app_home }}/src/{{ frontend_subdir }}"
+    creates: "{{ app_home }}/src/{{ frontend_subdir }}/node_modules"
+  environment:
+    PATH: "{{ node_home }}/bin:/usr/bin:/bin"
+  become_user: "{{ app_user }}"
+
+- name: Зібрати React (npm run build)
+  ansible.builtin.command:
+    cmd: "{{ node_home }}/bin/npm run build"
+    chdir: "{{ app_home }}/src/{{ frontend_subdir }}"
+    creates: "{{ app_home }}/src/{{ frontend_subdir }}/build/index.html"
+  environment:
+    PATH: "{{ node_home }}/bin:/usr/bin:/bin"
+    REACT_APP_ROOT_SERVER: "{{ frontend_api_url }}"
+    NODE_OPTIONS: "--max_old_space_size=2048"
+    CI: "false"
+  become_user: "{{ app_user }}"
+
+# ---------- Публікація ----------
+- name: Каталог для статичних файлів сайту
+  ansible.builtin.file:
+    path: "{{ web_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Скопіювати збірку в каталог nginx
+  ansible.builtin.copy:
+    src: "{{ app_home }}/src/{{ frontend_subdir }}/build/"
+    dest: "{{ web_root }}/"
+    remote_src: true
+    owner: root
+    group: root
+
+- name: Конфігурація nginx
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: nginx -t -c %s     # перевірити синтаксис ДО збереження
+  notify: Reload nginx
+
+- name: Увімкнути та запустити nginx
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Firewall — відкрити порт сайту
+  community.general.ufw:
+    rule: allow
+    port: "{{ frontend_port }}"
+    proto: tcp
+    comment: "TeachUA frontend"
+
+- name: Перевірка роботи (сайт відповідає)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ frontend_port }}/"
+    status_code: 200

@@ -1,0 +1,76 @@
+---
+- name: Встановити MariaDB та залежності для модулів Ansible
+  ansible.builtin.apt:
+    name:
+      - mariadb-server
+      - mariadb-client
+      - python3-pymysql     # модулі community.mysql працюють через цю бібліотеку
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Налаштувати MariaDB (мережа, кодування)
+  ansible.builtin.template:
+    src: teachua.cnf.j2
+    dest: /etc/mysql/mariadb.conf.d/99-teachua.cnf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart mariadb
+
+- name: Застосувати накопичені handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Увімкнути та запустити MariaDB
+  ansible.builtin.service:
+    name: mariadb
+    state: started
+    enabled: true
+
+- name: Створити базу даних
+  community.mysql.mysql_db:
+    name: "{{ db_name }}"
+    encoding: utf8
+    collation: utf8_bin
+    state: present
+    login_unix_socket: "{{ db_socket }}"
+
+- name: Створити користувача (доступ лише з IP backend)
+  community.mysql.mysql_user:
+    name: "{{ db_user }}"
+    host: "{{ backend_host }}"
+    password: "{{ db_password }}"
+    priv: "{{ db_name }}.*:ALL"
+    state: present
+    login_unix_socket: "{{ db_socket }}"
+  no_log: true     # не показувати пароль у виводі
+
+- name: Каталог для файлу зі схемою
+  ansible.builtin.file:
+    path: /opt/teachua
+    state: directory
+    mode: "0755"
+
+- name: Завантажити data.sql із репозиторію
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/{{ repo_owner }}/{{ repo_name }}/{{ repo_version }}/{{ backend_subdir }}/data.sql"
+    dest: /opt/teachua/data.sql
+    mode: "0644"
+
+- name: Перевірити, чи вже є таблиці в базі
+  ansible.builtin.command: >
+    mariadb -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='{{ db_name }}'"
+  register: table_count
+  changed_when: false     # це лише читання, нічого не змінює
+
+- name: Імпортувати data.sql (лише в порожню базу)
+  ansible.builtin.shell: "mariadb {{ db_name }} < /opt/teachua/data.sql"
+  when: table_count.stdout | trim | int == 0
+
+- name: Firewall — порт БД відкрито лише для backend
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ backend_host }}"
+    to_port: "{{ db_port }}"
+    proto: tcp
+    comment: "MariaDB from backend"

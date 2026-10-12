@@ -1,0 +1,36 @@
+user www-data;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    sendfile on;
+    server_tokens off;
+    access_log /var/log/nginx/access.log;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    server {
+        listen {{ frontend_port }};
+        server_name _;
+
+        root {{ web_root }};
+        index index.html;
+
+        # React Router: невідомі шляхи віддають index.html
+        location / {
+            try_files $uri /index.html;
+        }
+
+        location ~* \.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?)$ {
+            expires 7d;
+        }
+    }
+}

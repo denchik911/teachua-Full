@@ -1,0 +1,40 @@
+---
+- name: Перевірити, що ОС — Debian або похідна
+  ansible.builtin.assert:
+    that: ansible_os_family == "Debian"
+    fail_msg: "Плейбук розрахований на Debian (apt, ufw)"
+
+- name: Встановити базові пакети
+  ansible.builtin.apt:
+    name:
+      - sudo
+      - git
+      - ufw
+      - acl
+      - tar
+      - xz-utils
+      - curl
+      - ca-certificates
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Firewall — дозволити SSH
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+
+- name: Firewall — заборонити весь вхідний трафік за замовчуванням
+  community.general.ufw:
+    default: deny
+    direction: incoming
+
+- name: Firewall — дозволити вихідний трафік
+  community.general.ufw:
+    default: allow
+    direction: outgoing
+
+- name: Firewall — увімкнути ufw
+  community.general.ufw:
+    state: enabled
