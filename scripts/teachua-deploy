@@ -1,0 +1,44 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ $# -ne 1 || ! "$1" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Використання: teachua-deploy <номер збірки Jenkins>" >&2
+  exit 1
+fi
+
+if [[ $EUID -ne 0 ]]; then
+  echo "Потрібен запуск через sudo." >&2
+  exit 1
+fi
+
+tag="ci-$1"
+archive="/home/manager/labs/teachua-cicd/incoming/teachua-images.tar"
+
+if [[ ! -f "$archive" ]]; then
+  echo "Архів образів не знайдено." >&2
+  exit 1
+fi
+
+/usr/local/bin/k3s ctr images import "$archive"
+
+for component in backend frontend; do
+  if ! /usr/local/bin/k3s ctr images list -q |
+    grep -Fx "docker.io/library/teachua-${component}:${tag}" > /dev/null; then
+    echo "Не знайдено образ teachua-${component}:${tag}" >&2
+    exit 1
+  fi
+done
+
+/usr/local/bin/k3s kubectl set image deployment/backend \
+  "backend=teachua-backend:${tag}" --namespace=teachua
+
+/usr/local/bin/k3s kubectl rollout status deployment/backend \
+  --namespace=teachua --timeout=300s
+
+/usr/local/bin/k3s kubectl set image deployment/frontend \
+  "frontend=teachua-frontend:${tag}" --namespace=teachua
+
+/usr/local/bin/k3s kubectl rollout status deployment/frontend \
+  --namespace=teachua --timeout=600s
+
+/usr/local/bin/k3s kubectl get pods --namespace=teachua

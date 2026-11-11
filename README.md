@@ -2,7 +2,7 @@
 
 Гілка `Kubernetes` створена на основі `docker`. TeachUA розгорнуто локально на окремій VMware VM: React frontend, Java 17 / Spring Boot backend і MariaDB 10.11. Dockerfile залишені без змін; Docker використовується для збірки, containerd K3s — для запуску.
 
-## Перевірений результат
+  ## Перевірений результат
 
 За результатами виконання користувачем 11 листопада 2026 року:
 
@@ -11,6 +11,7 @@
 - PVC `db-data` — Bound; початкові таблиці імпортовані, користувач БД підключається.
 - Backend успішно підключився до MariaDB; контекст API `/dev`.
 - Сторінка відкривається з Windows, дані завантажуються.
+- Jenkins успішно виконав збірку, доставку образів та оновлення backend/frontend; після оновлення сайт працює й дані завантажуються.
 - В окремому тесті Nginx підтверджено перестворення pod після видалення. Відмовостійкість VM цим не перевірялась.
 
 ## Архітектура
@@ -122,6 +123,79 @@ sudo k3s kubectl get pods,service -n teachua
 
 Відкрийте `http://<IP-VM>:30300` з Windows і перевірте завантаження даних. Браузер викликає backend напряму через `http://<IP-VM>:30080/dev`. HTTP 403 на `/dev/` підтверджує відповідь сервера, але не роботу конкретного API.
 
+## CI/CD через Jenkins
+
+```text
+GitHub (Kubernetes) → Jenkins → Docker build → TAR → SCP → Debian
+                                                       ↓
+                                  імпорт у K3s → оновлення Deployment
+```
+
+Pipeline запускається вручну через **Build Now**. Він отримує код гілки `Kubernetes`, збирає frontend/backend із тегом `ci-<BUILD_NUMBER>`, упаковує обидва образи в `teachua-images.tar` і передає архів через SSH. На Debian скрипт `teachua-deploy` перевіряє номер збірки, імпортує образи та перевіряє наявність обох потрібних тегів. Потім послідовно оновлює backend і frontend, очікуючи успішного rollout кожного. БД та PVC не перестворюються.
+
+### Файли автоматизації
+
+- `Jenkinsfile` — збережений Pipeline script останнього успішного запуску.
+- `scripts/teachua-deploy` — копія скрипту, встановленого на Debian у `/usr/local/sbin/teachua-deploy`.
+
+Ці два файли потрібно додати до того самого коміту, що й оновлення документації. Секрети в них не зберігаються.
+
+### Передумови
+
+| Машина | Налаштування |
+|---|---|
+| Jenkins | `192.168.50.143`; Git, Docker, SSH-клієнт; Docker доступний користувачу `jenkins` |
+| Jenkins | Плагін SSH Agent; credential `teachua-k3s-ssh`, тип SSH Username with private key, username `manager` |
+| Jenkins | Перевірений за відбитком ключ Debian у `known_hosts` користувача `jenkins` |
+| Debian / K3s | `192.168.50.139`; доступ через SSH, наявне початкове розгортання TeachUA |
+| Debian / K3s | `/home/manager/labs/teachua-cicd/incoming`, власник `manager`, права `0700` |
+
+Ключ створюється окремо для навчального проєкту. Його публічна частина додається до `authorized_keys` користувача `manager` на Debian, приватна — до Jenkins Credentials. Приватний ключ, kubeconfig, `.env`, паролі та експорт Secret у Git не додаються. Підготовка відбитка виконується для фактичного агента Jenkins, на якому працюватиме pipeline.
+
+### Установлення скрипту на Debian
+
+Після отримання файлів автоматизації з репозиторію адміністратор виконує:
+
+```bash
+bash -n scripts/teachua-deploy
+sudo install -o root -g root -m 0755 \
+  scripts/teachua-deploy /usr/local/sbin/teachua-deploy
+sudo visudo -f /etc/sudoers.d/teachua-jenkins
+```
+
+Правила `sudo` для цієї навчальної VM:
+
+```sudoers
+manager ALL=(root) NOPASSWD: /usr/local/bin/k3s kubectl get pods --namespace=teachua
+manager ALL=(root) NOPASSWD: /usr/local/sbin/teachua-deploy
+```
+
+Після збереження перевірте права та синтаксис:
+
+```bash
+sudo chown root:root /etc/sudoers.d/teachua-jenkins
+sudo chmod 0440 /etc/sudoers.d/teachua-jenkins
+sudo visudo -c
+```
+
+Скрипт має належати root і не бути доступним для зміни Jenkins або `manager`. Дозвіл на його запуск поширюється на аргументи, тому скрипт перевіряє, що отримав рівно один додатний цілий номер збірки. Jenkins отримує можливість запускати код доставлених образів: джерело коду, Jenkins і доступ до його завдань мають бути довіреними.
+
+### Налаштування завдання
+
+У Jenkins створено Pipeline `teachua-kubernetes-deploy`. Перевірений `Jenkinsfile` можна вставити в **Pipeline script**. Для зберігання конфігурації в Git оберіть **Pipeline script from SCM → Git**, URL цього репозиторію, branch specifier `*/Kubernetes`, Script Path `Jenkinsfile`. Такий спосіб отримання Jenkinsfile ще не перевірявся; повний успішний цикл виконано з Pipeline script у Jenkins.
+
+Після **Build Now** очікуються успішні етапи отримання коду, збірки двох образів, доставки та розгортання. Перевірте обидва повідомлення `successfully rolled out`, фінальний `SUCCESS`, потім відкрийте сайт і перевірте дані. Готовність TCP-порту не замінює перевірки застосунку в браузері.
+
+### Обмеження CI/CD
+
+- Webhook не налаштований: push у GitHub сам не запускає збірку.
+- Автоматичного відкату немає: при помилці frontend і backend можуть залишитися на різних версіях.
+- `disableConcurrentBuilds()` захищає лише від паралельних запусків цього завдання. Інші завдання не повинні одночасно перезаписувати спільний архів доставки.
+- Архів перезаписується; старі образи й кеші автоматично не очищуються. Контролюйте вільний диск на обох VM.
+- Pipeline оновлює образи наявних Deployment; зміни YAML, конфігурації та схеми БД автоматично не застосовуються.
+- Маніфести `k8s/backend.yaml` і `k8s/frontend.yaml` містять початковий тег `demo1`. Повторний `apply` поверне цей тег; поточні версії після CI/CD мають теги `ci-<BUILD_NUMBER>`.
+- Копіювання скрипту в Git не оновлює встановлену системну копію: після зміни повторіть її встановлення адміністратором.
+
 ## Діагностика
 
 ```bash
@@ -140,7 +214,7 @@ sudo k3s kubectl top pods -n teachua
 - Один вузол: при падінні VM зупиняється весь проєкт. Local-path не є резервною копією; 5Gi не гарантує жорсткої квоти.
 - Frontend використовує Node 16 і dev-сервер. Під час збірки npm повідомив про несумісну вимогу Node однієї залежності та 193 вразливості; автоматичні виправлення не запускались.
 - Тести backend пропущені Dockerfile через `-DskipTests`. TCP probes перевіряють порт, а не бізнес-функції API. Liveness probes ще не додані.
-- TLS, Ingress для застосунку, production-збірка frontend, registry та автоматичне CD ще не налаштовані.
+- TLS, Ingress для застосунку, production-збірка frontend та registry ще не налаштовані. Мінімальне CD працює через SSH та імпорт локальних образів.
 - Prometheus/Grafana й хмарне розгортання — наступні етапи. Floci планується як локальна емуляція AWS; це не міграція в реальну хмару.
 
 ## Зупинка й очищення
