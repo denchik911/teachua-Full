@@ -1,146 +1,162 @@
-# TeachUA — Розгортання за допомогою Docker
+# TeachUA — Kubernetes (K3s)
 
-Ця гілка (`docker`) запускає вебдодаток TeachUA у контейнерах за допомогою Docker Compose.
+Гілка `Kubernetes` створена на основі `docker`. TeachUA розгорнуто локально на окремій VMware VM: React frontend, Java 17 / Spring Boot backend і MariaDB 10.11. Dockerfile залишені без змін; Docker використовується для збірки, containerd K3s — для запуску.
 
-TeachUA — це проєкт, що складається з бекенду на Java, фронтенду на React та бази даних MariaDB/MySQL.
+## Перевірений результат
 
-Передбачено два режими розгортання:
+За результатами виконання користувачем 11 листопада 2026 року:
 
-| Режим | Файл Compose | База даних |
-|---|---|---|
-| Зовнішня база даних | `docker-compose.external-db.yml` | Окремий сервер (наприклад, ВМ Oracle Linux 10) |
-| Локальна база даних | `docker-compose.local-db.yml` | Контейнер MariaDB на тому ж хості |
-
-Усі налаштування для обох режимів містяться в одному файлі `.env`.
-
----
+- Debian 12, x86_64, 4 vCPU, 8 ГБ RAM, диск 48 ГБ; K3s `v1.37.2+k3s1`.
+- Вузол Ready; frontend, backend і db — `1/1 Running`, без перезапусків на момент перевірки.
+- PVC `db-data` — Bound; початкові таблиці імпортовані, користувач БД підключається.
+- Backend успішно підключився до MariaDB; контекст API `/dev`.
+- Сторінка відкривається з Windows, дані завантажуються.
+- В окремому тесті Nginx підтверджено перестворення pod після видалення. Відмовостійкість VM цим не перевірялась.
 
 ## Архітектура
 
-```
- Браузер
-    │
-    ├──► frontend  (Сервер розробки React, :3000)
-    │
-    └──► backend   (Spring, :8080)
-              │
-              └──► MariaDB
-                     ├─ режим external-db: окрема ВМ, порт 3306
-                     └─ режим local-db:    контейнер "db", лише внутрішня мережа
+```text
+Браузер ── VM:30300 ── Service frontend ── React :3000
+   └────── VM:30080 ── Service backend ─── Spring :8080 /dev
+                                              │
+                                         Service db:3306
+                                              │
+                                         MariaDB ── PVC db-data
 ```
 
-Браузер звертається до бекенду напряму, тому `APP_HOST` має бути адресою, доступною **з браузера**, а не внутрішнім ім'ям Docker.
+Усе працює в namespace `teachua` на одному вузлі. БД не має зовнішнього порту. Deployment підтримує бажану кількість pod, Service надає стабільну мережеву адресу, PVC зберігає дані окремо від pod. Паролі беруться із Secret, SQL — із ConfigMap.
 
-## Структура репозиторію
+## Файли
 
-```
-.
-├── teachua-backend/
-│   ├── Dockerfile                    # збірка в кілька етапів: Maven (JDK 17) -> JRE 17, non-root
-│   └── data.sql                      # схема та початкові дані
-├── teachua-frontend/
-│   ├── Dockerfile                    # Node 16, запускає `npm start`
-├── docker-compose.external-db.yml    # бекенд + фронтенд, база даних на іншому сервері
-├── docker-compose.local-db.yml       # бекенд + фронтенд + контейнер MariaDB
-├── .env.example                      # шаблон для всіх змінних
-└── README.md
-```
+| Файл | Призначення |
+|---|---|
+| `k8s/db-storage.yaml` | PVC 5Gi, local-path |
+| `k8s/db.yaml` | MariaDB, перевірки готовності, внутрішній Service |
+| `k8s/backend.yaml` | Backend, ресурси, probes, NodePort 30080 |
+| `k8s/frontend.yaml` | Frontend, адреса API, ресурси, NodePort 30300 |
+| `README.docker.md` | Попередня інструкція Docker Compose |
 
-## Передумови
+ConfigMap генерується з наявного `teachua-backend/data.sql`. Secret створюється на VM й у Git не зберігається. Архіви образів та дані БД також не комітяться.
 
-- Docker Engine з Docker Compose v2 (`docker compose version`)
-- Принаймні 4 ГБ оперативної пам'яті (сервер розробки React та збірка Maven вимагають багато пам'яті)
-- Вільні порти: `3000` (фронтенд) та `8080` (бекенд)
-- Для режиму external-db: доступний сервер MariaDB/MySQL із заздалегідь підготовленою базою даних `teachua` та користувачем, якому дозволено підключатися з цього хоста
+## Відтворення на чистій навчальній VM
 
+Команди нижче виконуються в Bash на окремій Debian VM із sudo та інтернетом. Docker і K3s потрібні обидва; Compose для цього запуску не використовується. Не повторюйте підготовку Secret і namespace на вже працюючому кластері.
 
-## Налаштування
+### 1. Інструменти та код
 
 ```bash
-cp .env.example .env
-nano .env
+sudo apt update
+sudo apt install -y curl ca-certificates git docker.io
+sudo systemctl enable --now docker
+curl -fL https://get.k3s.io -o /tmp/install-k3s.sh
+sudo sh /tmp/install-k3s.sh
+sudo k3s kubectl get nodes -o wide
+git clone --branch Kubernetes --single-branch https://github.com/denchik911/teachua-Full.git ~/labs/teachua-k8s
+cd ~/labs/teachua-k8s
 ```
 
-Файл `.env` ігнорується системою git. Ніколи не комітьте його.
+Інсталятор встановлює поточну stable-версію K3s, яка може відрізнятися від перевіреної. Дочекайтеся Ready; firewall не вимикайте автоматично. Порти 30300/30080 мають бути доступні з навчальної мережі, не з публічного інтернету.
 
-| Змінна | Опис | Використовується в |
-|---|---|---|
-| `DB_HOST` | Адреса сервера бази даних | external-db |
-| `DB_PORT` | Порт бази даних (за замовчуванням `3306`) | external-db |
-| `DB_NAME` | Назва бази даних (за замовчуванням `teachua`) | обох |
-| `DB_USER` | Користувач бази даних | обох |
-| `DB_PASSWORD` | Пароль користувача бази даних | обох |
-| `DB_ROOT_PASSWORD` | Пароль root для MariaDB | local-db |
-| `JDBC_DRIVER` | Клас JDBC-драйвера (`org.mariadb.jdbc.Driver`) | обох |
-| `BACKEND_PORT` | Опублікований порт бекенду (за замовчуванням `8080`) | обох |
-| `APP_HOST` | IP або ім'я хоста цього комп'ютера, видиме з браузера | обох |
-| `FRONTEND_PORT` | Опублікований порт фронтенду (за замовчуванням `3000`) | обох |
-| `IMAGE_TAG` | Тег для зібраних образів (за замовчуванням `local`) | обох |
-
-У режимі local-db бекенд завжди підключається до хоста `db` (контейнера бази даних), тому `DB_HOST` там ігнорується. Той самий файл `.env` працює для обох режимів.
-
-## Запуск
-
-### Режим 1: база даних на іншому сервері
-
-Підготуйте базу даних один раз на сервері баз даних:
-
-```sql
-CREATE DATABASE teachua;
-CREATE USER 'teachua'@'%' IDENTIFIED BY 'password';
-GRANT ALL PRIVILEGES ON teachua.\* TO 'teachua'@'%';
-FLUSH PRIVILEGES;
-```
-На сервері з базою даних імпортувати базу даних з репозиторію 
-```bash
-mariadb -u teachua -p teachua < data.sql
-```
-Потім на сервері з проєктом можна запустити команду
-```bash
-
-docker compose -f docker-compose.external-db.yml up -d --build
-```
-
-### Режим 2: база даних у контейнері
+### 2. Образи
 
 ```bash
-docker compose -f docker-compose.local-db.yml up -d --build
+sudo docker build -t teachua-backend:demo1 ./teachua-backend
+sudo docker build -t teachua-frontend:demo1 ./teachua-frontend
+sudo docker save -o /tmp/teachua-backend-demo1.tar teachua-backend:demo1
+sudo docker save -o /tmp/teachua-frontend-demo1.tar teachua-frontend:demo1
+sudo k3s ctr images import /tmp/teachua-backend-demo1.tar
+sudo k3s ctr images import /tmp/teachua-frontend-demo1.tar
+sudo k3s ctr images list | grep teachua
 ```
 
-Файл `data.sql` імпортується автоматично під час першого запуску (коли том `dbdata` порожній).
+Docker і K3s мають окремі сховища образів. `imagePullPolicy: Never` вимагає імпорту на кожний вузол, де запускатиметься застосунок. Для цього демо вузол один.
 
-Не запускайте обидва режими одночасно: вони використовують однакові порти та назву проєкту. Зупиніть один перед запуском іншого.
-
-## Перевірка
+### 3. Namespace, SQL і паролі
 
 ```bash
-docker compose -f <compose-file> ps
-curl -I http://<APP_HOST>:3000
-curl -I http://<APP_HOST>:8080
+sudo k3s kubectl create namespace teachua
+sudo k3s kubectl create configmap db-init --namespace=teachua \
+  --from-file=01-data.sql=teachua-backend/data.sql
+read -rsp 'Пароль користувача teachua: ' DB_PASSWORD; echo
+read -rsp 'Окремий пароль root MariaDB: ' DB_ROOT_PASSWORD; echo
+(
+  set -o pipefail
+  if [ -z "$DB_PASSWORD" ] || [ -z "$DB_ROOT_PASSWORD" ]; then
+    echo 'Паролі порожні — Secret не створено.'
+    exit 1
+  fi
+  printf '%s\n' "DB_PASSWORD=$DB_PASSWORD" "DB_ROOT_PASSWORD=$DB_ROOT_PASSWORD" |
+    sudo k3s kubectl create secret generic db-credentials \
+      --namespace=teachua --from-env-file=/dev/stdin
+)
+unset DB_PASSWORD DB_ROOT_PASSWORD
+sudo k3s kubectl get secret db-credentials --namespace=teachua
 ```
 
-Перший запуск фронтенду займає кілька хвилин. Дочекайтеся повідомлення `Compiled successfully` у виводі:
+Продовжуйте лише після успішного створення Secret (`DATA 2`). Використовуйте окремі навчальні паролі. Не публікуйте Secret, kubeconfig, `.env` або токени. ConfigMap призначений лише для демонстраційного SQL без приватних даних. Secret сам по собі не гарантує шифрування на диску.
+
+### 4. MariaDB
 
 ```bash
-docker compose -f <compose-file> logs -f frontend
+sudo k3s kubectl apply -f k8s/db-storage.yaml
+sudo k3s kubectl apply -f k8s/db.yaml
+sudo k3s kubectl rollout status deployment/db -n teachua --timeout=300s
+sudo k3s kubectl get pods,pvc,service -n teachua
+sudo k3s kubectl exec -it deployment/db -n teachua -- mariadb -u teachua -p teachua
 ```
 
-Після цього відкрийте `http://<APP_HOST>:3000`.
+У MariaDB: `SHOW TABLES;`, потім `exit;`. SQL виконується лише при першому запуску з порожнім каталогом даних. Зміна Secret не змінює пароль уже ініціалізованої БД. Не видаляйте PVC для виправлення помилок.
 
-## Корисні команди
+### 5. Backend і frontend
+
+Перед запуском змініть `REACT_APP_ROOT_SERVER` у `k8s/frontend.yaml`: замість `192.168.50.139` поставте IP своєї VM, доступний із браузера. Залиште порт `30080`, без `/dev` — frontend додає цей префікс сам.
 
 ```bash
-docker compose -f <compose-file> logs -f backend      # перегляд логів бекенду в реальному часі
-docker compose -f <compose-file> restart backend      # перезапуск одного сервісу
-docker compose -f <compose-file> up -d --build        # перезбірка та застосування змін
-docker compose -f <compose-file> down                 # зупинка та видалення контейнерів
-docker compose -f <compose-file> down -v              # також видалити том бази даних (local-db)
+sudo k3s kubectl apply -f k8s/backend.yaml
+sudo k3s kubectl rollout status deployment/backend -n teachua --timeout=300s
+sudo k3s kubectl logs deployment/backend -n teachua --tail=60
+sudo k3s kubectl apply -f k8s/frontend.yaml
+sudo k3s kubectl rollout status deployment/frontend -n teachua --timeout=600s
+sudo k3s kubectl get pods,service -n teachua
 ```
 
-## Нотатки щодо реалізації
+Відкрийте `http://<IP-VM>:30300` з Windows і перевірте завантаження даних. Браузер викликає backend напряму через `http://<IP-VM>:30080/dev`. HTTP 403 на `/dev/` підтверджує відповідь сервера, але не роботу конкретного API.
 
-- **Образ бекенду.** Багатоетапна збірка (multi-stage build): WAR збирається за допомогою Maven на JDK 17 і запускається на базі JRE 17 від імені непривілейованого користувача (UID 10001). Налаштування бази даних передаються через змінні `DATASOURCE_URL`, `DATASOURCE_USER`, `DATASOURCE_PASSWORD` та `JDBC_DRIVER`.
-- **Образ фронтенду.** Запускає сервер розробки React (`npm start`), так само як додаток запускався без контейнерів. Це налаштування для розробки; у майбутньому планується збірка для production, що обслуговується через nginx.
-- **Ініціалізація бази даних.** У режимі local-db `data.sql` виконується лише один раз. Щоб виконати повторний імпорт, перестворіть том.
-- **Порядок запуску.** У режимі local-db бекенд очікує на перевірку стану (healthcheck) бази даних. Сам healthcheck бекенду перевіряє лише те, що порт 8080 приймає з'єднання.
-- **Секрети.** Усі облікові дані беруться з `.env`. У git відстежується лише `.env.example`.
+## Діагностика
+
+```bash
+sudo k3s kubectl get pods,pvc,service -n teachua
+sudo k3s kubectl logs deployment/backend -n teachua --tail=60
+sudo k3s kubectl logs deployment/frontend -n teachua --tail=60
+sudo k3s kubectl get events -n teachua --sort-by=.metadata.creationTimestamp
+sudo k3s kubectl top nodes
+sudo k3s kubectl top pods -n teachua
+```
+
+`ErrImageNeverPull` — перевірте імпорт і тег образу. Помилки браузера діагностуйте через F12 → Network/Console: адресу API, HTTP-статус і CORS. Метрики потребують готового metrics-server. Логи можуть містити чутливі значення — перевіряйте перед публікацією.
+
+## Обмеження і наступні кроки
+
+- Один вузол: при падінні VM зупиняється весь проєкт. Local-path не є резервною копією; 5Gi не гарантує жорсткої квоти.
+- Frontend використовує Node 16 і dev-сервер. Під час збірки npm повідомив про несумісну вимогу Node однієї залежності та 193 вразливості; автоматичні виправлення не запускались.
+- Тести backend пропущені Dockerfile через `-DskipTests`. TCP probes перевіряють порт, а не бізнес-функції API. Liveness probes ще не додані.
+- TLS, Ingress для застосунку, production-збірка frontend, registry та автоматичне CD ще не налаштовані.
+- Prometheus/Grafana й хмарне розгортання — наступні етапи. Floci планується як локальна емуляція AWS; це не міграція в реальну хмару.
+
+## Зупинка й очищення
+
+Для тимчасової зупинки зі збереженням PVC та даних:
+
+```bash
+sudo k3s kubectl scale deployment/frontend deployment/backend deployment/db -n teachua --replicas=0
+```
+
+Для запуску встановіть `--replicas=1`; спочатку дочекайтеся готовності БД, потім застосунку.
+
+**Руйнівна операція:** наступна команда видаляє весь namespace `teachua`, включно із Secret, ConfigMap, застосунками й PVC. Для local-path це може видалити і самі дані MariaDB. Виконуйте лише після резервного копіювання потрібних даних та перевірки цільового кластера:
+
+```bash
+sudo k3s kubectl delete namespace teachua
+```
+
+Образи й TAR-архіви цією командою не видаляються. Системні компоненти K3s та окремий тестовий namespace `demo` залишаються.
